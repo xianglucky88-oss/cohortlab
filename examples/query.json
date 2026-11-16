@@ -1,0 +1,1 @@
+{"start":"2026-11-01T00:00:00Z","end":"2026-11-03T00:00:00Z","where":{"field":"plan","op":"eq","value":"pro"},"sequence":["signup","activate"],"max_gap_seconds":86400,"group_by":["region"]}

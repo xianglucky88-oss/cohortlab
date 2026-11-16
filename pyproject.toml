@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "cohortlab"
+version = "0.1.0"
+description = "Tenant-scoped cohort queries with sequence matching and disclosure controls"
+requires-python = ">=3.11"
+dependencies = []
+[project.scripts]
+cohortlab = "cohortlab.cli:main"
+[tool.setuptools.packages.find]
+where = ["src"]
