@@ -5,6 +5,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from .policy import QueryPolicy, canonical
+from .planning import PlanCapacityError, PlanRequestError, build_plan
 from .query import aggregate, instant, matches, sequence_matches, validate
 
 
@@ -84,6 +85,56 @@ class CohortEngine:
         for subject, at, kind in rows: by_subject[subject].append((at, kind))
         gap = definition.get("max_gap_seconds", self.policy.max_window_days * 86400) * 1000000
         return [s for s in selected if sequence_matches(by_subject[s["id"]], sequence, gap)], self._revision(tenant)
+
+    def build_sample_plan(self, tenant, principal, request):
+        """Internal, in-process quota sampling over a *frozen* snapshot.
+
+        Strict boundary of this capability:
+
+        * the input only names an existing snapshot readable by this
+          tenant/principal, plus N, a seed and two quota tables; no new events,
+          filters or temporal conditions are accepted and no time-series query
+          is re-executed;
+        * the method is read-only: failures and successes never create
+          snapshots, touch the query cache, write audit rows or consume query
+          budget;
+        * selected subject ids are returned only across this trusted Python job
+          boundary - there is deliberately no CLI or other public surface.
+        """
+        tenant, principal = self._identity(tenant), self._identity(principal)
+        if not isinstance(request, dict):
+            raise PlanRequestError("plan request must be an object")
+        snapshot_id = request.get("snapshot")
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+            raise PlanRequestError("plan requires an existing frozen snapshot id")
+        if set(request) - {"snapshot", "n", "seed", *self.policy.plan_dimensions}:
+            raise PlanRequestError("unknown plan fields")
+
+        # Explicit read-only transaction: even an accidental future write inside
+        # build_plan would fail here instead of mutating frozen state.
+        self.db.execute("BEGIN")
+        try:
+            row = self.db.execute(
+                "SELECT members,revision FROM snapshots WHERE id=? AND tenant=? AND principal=?",
+                (snapshot_id, tenant, principal)).fetchone()
+            if row is None:
+                # Same opaque refusal as snapshot queries: no existence oracle.
+                raise PlanRequestError("snapshot is unavailable to this principal")
+            members = json.loads(row[0])
+            revision = row[1]
+            if len(members) > self.policy.max_plan_members:
+                raise PlanCapacityError(
+                    f"snapshot has {len(members)} members, limit is {self.policy.max_plan_members}",
+                    {"max_plan_members": self.policy.max_plan_members})
+            plan_input = {key: value for key, value in request.items() if key != "snapshot"}
+            result = build_plan(plan_input, members, self.policy)
+            self.db.rollback()
+        except BaseException:
+            self.db.rollback()
+            raise
+        result["snapshot"] = snapshot_id
+        result["revision"] = revision
+        return result
 
     def query(self, tenant, principal, definition):
         tenant, principal = self._identity(tenant), self._identity(principal)
