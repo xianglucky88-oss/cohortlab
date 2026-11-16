@@ -114,9 +114,16 @@ class CohortTests(unittest.TestCase):
 
     def test_event_idempotency_and_conflicts(self):
         self.engine.ingest("a", [], self.population["events"])
-        self.assertEqual(self.engine.db.execute("SELECT count(*) FROM events").fetchone()[0], 6)
+        self.assertEqual(self.engine.db.execute("SELECT count(*) FROM events").fetchone()[0], 10)
         event = {**self.population["events"][0], "type": "changed"}
         with self.assertRaises(ValueError): self.engine.ingest("a", [], [event])
+        # A same-id event whose only difference is an attribute value also conflicts.
+        attr_conflict = {**self.population["events"][0],
+                         "attributes": {**self.population["events"][0]["attributes"], "channel": "branch"}}
+        with self.assertRaises(ValueError): self.engine.ingest("a", [], [attr_conflict])
+        # Re-ingesting byte-identical events stays idempotent, attributes included.
+        self.engine.ingest("a", [], self.population["events"])
+        self.assertEqual(self.engine.db.execute("SELECT count(*) FROM events").fetchone()[0], 10)
 
     def test_group_and_window_limits(self):
         self.engine.policy = replace(self.engine.policy, max_groups=1)
